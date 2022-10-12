@@ -1,15 +1,22 @@
 const fs = require("fs");
 
-fs.writeFile("straw.berry", 'GET /index AUTH[test] RENDER;', function (err) {
+// Create script
+/*
+fs.writeFile("straw.berry", 'ROUTE users AT "newpath";', function (err) {
     if (err) {
         console.error("File creation unexpectedly malfunctioned. Error: " + err);
     } else {
         console.log("straw.berry file has been successfully created");
     }
 });
+*/
 
-let currentToken = "", index = 0, line = 0, lineTokenPosition = 0, file;
+var symbolTable = {};
+let currentToken = "", index = 0, line = 0, lineTokenPosition = 0, file, 
+    currentIdentifier = null, currentHTTPMethod = null, currentHTTPPath = null, 
+    currentReferenceTypes = [], currentReferenceValues = [];
 
+// Starts the compiling process
 async function setup() {
     try {
         return await fs.promises.readFile("straw.berry", (err, data) => {
@@ -22,26 +29,88 @@ async function setup() {
         console.error("An error occured while setting up the file.\n" + err);
     } 
 }
-
 setup();
 
 // Document := (Block)*
 function parseDocument() {
-    console.log(file);
-    next();
-    parseBlock();
+    if (hasNext()) {
+        next();
+        parseBlock();
+    }
+
+    while (hasNext()) {
+        parseBlock();
+    }
+
+    if (symbolTable["DEBUG"] !== undefined && symbolTable["DEBUG"].value === "true") {
+        console.log("[DEBUG]: Logging Symbol Table...\n");
+        console.log(symbolTable);
+    }
+
+    compileIntoCode();
 }
 
 // Block := Config | HTTP | Route | Function | Auth | Option
 function parseBlock() {
     if (currentToken === "S") parseConfig();
-    else if (currentToken === "R") {}
-    else if (currentToken === "F") {}
-    else if (currentToken === "A") {}
-    else if (currentToken === "O") {}
+    else if (currentToken === "R") parseRoute();
+    else if (currentToken === "F") parseFunction();
+    else if (currentToken === "A") throwError("AUTH Functions are not yet supported");
+    else if (currentToken === "O") throwError("OPTION Functions are not yet supported");
     else {
         if (currentToken === "G" || currentToken === "D" || currentToken === "P") parseHTTP();
         else throwError("Illegal Block. Either CONFIG, HTTP, Route, Function, Auth or Option expected");
+    }
+
+    parseOptionalWS();
+}
+
+// Function := "FUNCTION" ws $FunctionIdentifier$ opt_ws "{" $JavaScript$ "}"
+function parseFunction() {
+    throwError("[DEBUG]: Functions are not yet supported");
+
+    parseKeyword("FUNCTION");
+    parseWS();
+
+    const functionIdentifier = getVariableIdentifier();
+    console.log("New Function: " + functionIdentifier);
+
+    parseOptionalWS();
+    parseToken("{");
+    parseToken("}");
+}
+
+// Route := "ROUTE" ws $RouteName$ OptionalPath opt_ws ";"
+function parseRoute() {
+    parseKeyword("ROUTE");
+    parseWS();
+
+    const route = getPathIdentifier();
+    console.log("New route: " + route);
+
+    parseWS();
+
+    parseOptionalPath();
+    parseOptionalWS();
+
+    parseToken(";");
+}
+
+// OptionalPath := ("AT" ws $Path$)
+function parseOptionalPath() {
+    if (currentToken === "A") {
+        next();
+        if (currentToken === "T") {
+            next();
+
+            parseWS();
+            parseQuote();
+
+            const id = getVariableIdentifier();
+            console.log("New id: " + id);
+
+            next();
+        } else throwError("Illegal character: " + currentToken + ". T expected.");
     }
 }
 
@@ -62,18 +131,17 @@ function parseConfig() {
     parseToken(";");
 }
 
-// HTTP := HTTPMethod ws HTTPPath ws OptionalAuth* MethodType opt_ws ";" 
+// HTTP := HTTPMethod ws $PathIdentifier$ ws OptionalAuth* MethodType opt_ws ";" 
 function parseHTTP() {
     parseHTTPMethod();
     
     parseWS();
-    parseHTTPPath();
+    currentHTTPPath = getPathIdentifier();
     parseWS();
 
     parseOptionalAuth();
     
-    const type = getMethodType();
-    console.log("New HTTP Method Type: " + type);
+    putHTTPMethod(getMethodType());
 
     parseOptionalWS();
     parseToken(";");
@@ -92,6 +160,7 @@ function getMethodType() {
             } else if (currentToken === "D") {
                 parseKeyword("DIRECT");
                 parseOptionalWS();
+                currentReferenceTypes.push("REDIRECT");
                 parseReference();
                 return "REDIRECT";
             } else throwError("Either REDIRECT or RENDER expect. Illegal token: " + currentToken);
@@ -102,11 +171,13 @@ function getMethodType() {
     else if (currentToken === "O") {
         parseKeyword("OPTION");
         parseOptionalWS();
+        currentReferenceTypes.push("OPTION");
         parseReference();
         return "OPTION";
     }  else if (currentToken === "F") {
         parseKeyword("FUNCTION");
         parseOptionalWS();
+        currentReferenceTypes.push("FUNCTION");
         parseReference();
         return "FUNCTION";
     } else throwError("Illegal method type. Only RENDER, REDIRECT, OPTION or FUNCTION allowed");
@@ -119,6 +190,7 @@ function parseOptionalAuth() {
         parseOptionalWS();
 
         parseReference();
+        currentReferenceTypes.push("AUTH");
         parseWS();
     }
 }
@@ -139,32 +211,33 @@ function parseReference() {
                 else throwError("End of file reached. Closing ']' token expected");
             }
         }
-        console.log("New Reference: " + reference);
+        
+        currentReferenceValues.push(reference);
     }
 
     parseToken("]");
 }
 
-function parseHTTPPath() {
-    const path = getPathIdentifier();
-
-    console.log("New HTTP Path: " + path);
-}
-
+// HTTPMethod := "GET" | "POST" | "DELETE"
 function parseHTTPMethod() {
-    if (currentToken === "G") parseKeyword("GET");
-    else if (currentToken === "P") parseKeyword("POST");
-    else if (currentToken === "D") parseKeyword("DELETE");
+    if (currentToken === "G") {
+        parseKeyword("GET");
+        currentHTTPMethod = "GET";
+    } else if (currentToken === "P") {
+        parseKeyword("POST");
+        currentHTTPMethod = "POST";
+    } else if (currentToken === "D") {
+        parseKeyword("DELETE");
+        currentHTTPMethod = "DELETE";
+    }
     else throwError("Either GET, PUT or DELETE HTTP method expected");
 }
 
 // Value := Quote $VariableValue$ Quote
 function parseValue() {
     parseQuote();
-    const value = getVariableIdentifier();
+    putConfig(getVariableIdentifier());
     parseQuote();
-
-    console.log("new value: " + value);
 }
 
 // Variable := Quote $VariableName$ Quote
@@ -173,14 +246,16 @@ function parseVariable() {
     const variable = getVariableIdentifier();
     parseQuote();
 
-    console.log("new variable: " + variable);
+    currentIdentifier = variable; 
 }
 
+// Token := ?
 function parseToken(token) {
     if (currentToken === token) next();
-    else throwError("Illegal token. Token " + token + " expected.");
+    else throwError("Illegal token. Token " + token + " expected, but found: " + currentToken);
 }
 
+// Keyword := ?
 function parseKeyword(keywordName) {
     let i = 0;
 
@@ -194,17 +269,20 @@ function parseKeyword(keywordName) {
     }
 }
 
+// Quote := "'"|"""
 function parseQuote() {
     if (/\u0022/.test(currentToken) || /\u0027/.test(currentToken)) {
         next();
     } else throwError("Either a single or double quote expected");
 }
 
+// ws := [Any white space like " ", "\t", etc.]
 function parseWS() {
     if (!isWS()) throwError("White Space required.");
     else parseOptionalWS();
 }
 
+// opt_ws := (ws)*
 function parseOptionalWS() {
     while (isWS()) {
         next();
@@ -234,6 +312,7 @@ function getPathIdentifier() {
 }
 
 // Returns the built variable identifier of the current tokens until WS is met
+// Expects the first quote to have been parsed
 function getVariableIdentifier() {
     let identifier = "";
         
@@ -250,7 +329,39 @@ function getVariableIdentifier() {
 // Prints a debug error message
 function throwError(message) {
     throw new Error(message + "\nLine: " + line + "[" + lineTokenPosition + "]")
-} 
+}
+
+// Adds the value to the symbol table
+function putConfig(value) {
+    if (currentIdentifier === null) throw new Error("No identifier recognised, but value parsed");
+    else {
+        symbolTable[currentIdentifier] = { 
+            type: "config", 
+            value: value
+        };
+        currentIdentifier = null;
+    }
+}
+
+// Adds the http method to the symbol table
+function putHTTPMethod(httpType) {
+    if (currentHTTPMethod === null || currentHTTPPath === null) 
+        throw new Error("No method or path recognised, but value type parsed");
+    else {
+        symbolTable[currentHTTPPath] = {
+            type: "http-method",
+            method: currentHTTPMethod,
+            path: currentHTTPPath,
+            httpType: httpType,
+            referenceTypes: currentReferenceTypes,
+            referenceValues: currentReferenceValues
+        };
+
+        currentHTTPMethod = currentHTTPPath = null;
+        currentReferenceTypes = [];
+        currentReferenceValues = [];
+    }
+}
 
 // Gathers the next token and increments the line numbers if neccessary
 function next() {
@@ -266,6 +377,12 @@ function next() {
     index++;
 }
 
+// Returns true if there is still a token to jump to next during parsing
 function hasNext() {
     return index < file.length;
+}
+
+// Starts the code generation phase
+function compileIntoCode() {
+
 }
