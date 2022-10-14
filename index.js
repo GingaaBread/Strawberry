@@ -11,7 +11,7 @@ fs.writeFile("straw.berry", 'ROUTE users AT "newpath";', function (err) {
 });
 */
 
-var symbolTable = {};
+var symbolTable = {}, paths = [];
 let currentToken = "", index = 0, line = 0, lineTokenPosition = 0, file, 
     currentIdentifier = null, currentHTTPMethod = null, currentHTTPPath = null, 
     currentReferenceTypes = [], currentReferenceValues = [];
@@ -45,6 +45,9 @@ function parseDocument() {
     if (symbolTable["DEBUG"] !== undefined && symbolTable["DEBUG"].value === "true") {
         console.log("[DEBUG]: Logging Symbol Table...\n");
         console.log(symbolTable);
+        
+        console.log("\n[DEBUG]: Logging Path List...\n");
+        console.log(paths);
     }
 
     compileIntoCode();
@@ -333,7 +336,8 @@ function throwError(message) {
 
 // Adds the value to the symbol table
 function putConfig(value) {
-    if (currentIdentifier === null) throw new Error("No identifier recognised, but value parsed");
+    if (symbolTable[currentIdentifier] !== undefined) throwError("Configuration variable already exists.");
+    else if (currentIdentifier === null) throw new Error("No identifier recognised, but value parsed");
     else {
         symbolTable[currentIdentifier] = { 
             type: "config", 
@@ -343,19 +347,20 @@ function putConfig(value) {
     }
 }
 
-// Adds the http method to the symbol table
+// Adds the http method to the paths list
 function putHTTPMethod(httpType) {
-    if (currentHTTPMethod === null || currentHTTPPath === null) 
+    if (paths === null) throwError("[DEBUG]: Warning: Paths list shouldn't be null.");
+    else if (currentHTTPMethod === null || currentHTTPPath === null) 
         throw new Error("No method or path recognised, but value type parsed");
     else {
-        symbolTable[currentHTTPPath] = {
+        paths.push({
             type: "http-method",
             method: currentHTTPMethod,
             path: currentHTTPPath,
             httpType: httpType,
             referenceTypes: currentReferenceTypes,
             referenceValues: currentReferenceValues
-        };
+        });
 
         currentHTTPMethod = currentHTTPPath = null;
         currentReferenceTypes = [];
@@ -384,5 +389,68 @@ function hasNext() {
 
 // Starts the code generation phase
 function compileIntoCode() {
+    const boilerplateImports = 
+        "const express = require('express');\n"
+        + "const path = require('path');\n"
+        + "const fs = require('fs');"
+        + "\n";
+    
+    const serverCreation = "const server = express();\n"
+        + "server.use(express.static(path.join(__dirname, 'public')));";
 
+    let viewEngineDefined = false;
+    let viewEngine = symbolTable['VIEW_ENGINE'];
+    if (viewEngine !== undefined) {
+        if (viewEngine.value === 'EJS') {
+            viewEngine = "server.setViewEngine('ejs');\n";
+            viewEngineDefined = true;
+        } else throw new Error("Currently only EJS is supported as a view engine. Not accepting: " + viewEngine.value);
+    }
+
+    let methods = "";
+    for (let httpMethod of paths) {
+        let header = "";
+        if (httpMethod.method === "GET") {
+            header = `server.get('${httpMethod.path}', (res, req) => {\n`;
+            if (httpMethod.httpType === "RENDER") {
+                let file = "";
+                if (httpMethod.path === "/") {
+                    file = "./views/index.ejs";
+                } else {
+                    file = "./views/" + httpMethod.path.substring(1) + ".ejs";
+                }
+                header += `\tserver.render('${file}');\n});\n\n`
+            } else if (httpMethod.httpType === "REDIRECT") {
+                let redirectOptionIndex = -1;
+                for (let i = 0; i < httpMethod.referenceTypes.length; i++) {
+                    if (httpMethod.referenceTypes[i] === "REDIRECT") {
+                        redirectOptionIndex = i;
+                        i = httpMethod.referenceTypes.length;
+                    }
+                }
+
+                if (redirectOptionIndex === -1) throw new Error("Illegal State: The redirect option was not found.");
+                else {
+                    const redirectValue = httpMethod.referenceValues[redirectOptionIndex];
+                    const file = "./views/" + redirectValue + ".ejs";
+                    header += `\tserver.redirect('${file}');\n});\n\n`;
+                }
+            }
+        }
+
+        methods += header;
+    }
+
+    const port = "const PORT = process.env.PORT || 5000;\n"
+        + "server.listen(PORT, () => console.log(`Server running on port ${PORT}`));";
+
+    const code = 
+        boilerplateImports + "\n"
+        + serverCreation + "\n"
+        + (viewEngineDefined ? viewEngine : "") + "\n"
+        + methods
+        + port
+    ; 
+
+    console.log(code);
 }

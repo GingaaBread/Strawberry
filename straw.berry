@@ -2,8 +2,9 @@ SET "VIEW_ENGINE" = "EJS";
 SET "BASE_PATH" = "api/v1";
 SET "DEBUG" = "true";
 
-GET /index RENDER;
-GET /login RENDER;
+GET / RENDER;
+GET /examples/test RENDER;
+GET /helloWorld REDIRECT[test];
 POST /register AUTH[NEW_USERS_ONLY] RENDER;
 POST /test AUTH[NEW_USERS_ONLY] REDIRECT[example];
 DELETE /admin REDIRECT[FOOL];
